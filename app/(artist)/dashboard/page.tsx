@@ -43,9 +43,9 @@ export default async function DashboardPage() {
     prisma.order.groupBy({
       by: ["utmSource"],
       where: { shopId: shop.id, createdAt: { gte: days30 } },
-      _count: { _all: true },
+      _count: { id: true },
       _sum: { totalCents: true },
-      orderBy: { _count: { _all: "desc" } },
+      orderBy: { _count: { id: "desc" } },
       take: 5,
     }),
   ]);
@@ -118,7 +118,7 @@ export default async function DashboardPage() {
                   <li key={i} className="flex items-baseline justify-between">
                     <span className="truncate">{s.utmSource || "direct / non renseigné"}</span>
                     <span className="font-mono text-bs-primary-300">
-                      {s._count._all} · {formatEur(s._sum.totalCents ?? 0)}
+                      {s._count?.id ?? 0} · {formatEur(s._sum?.totalCents ?? 0)}
                     </span>
                   </li>
                 ))}

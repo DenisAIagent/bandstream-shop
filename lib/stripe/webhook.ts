@@ -50,8 +50,10 @@ async function onCheckoutCompleted(session: Stripe.Checkout.Session): Promise<vo
   const total = session.amount_total ?? subtotal + shippingCents;
   const fanEmail = session.customer_details?.email ?? session.customer_email ?? "";
   const fanName = session.customer_details?.name ?? md.bs_fan_name ?? "";
-  const shippingAddress = session.shipping_details?.address ?? session.customer_details?.address ?? null;
-  const billingAddress = session.customer_details?.address ?? null;
+  const toJson = (a: unknown): Prisma.InputJsonValue | typeof Prisma.JsonNull =>
+    a ? (JSON.parse(JSON.stringify(a)) as Prisma.InputJsonValue) : Prisma.JsonNull;
+  const shippingAddress = toJson(session.shipping_details?.address ?? session.customer_details?.address);
+  const billingAddress = toJson(session.customer_details?.address);
 
   const product = await prisma.product.findUnique({
     where: { id: productId },
@@ -76,8 +78,8 @@ async function onCheckoutCompleted(session: Stripe.Checkout.Session): Promise<vo
           shopId,
           fanEmail,
           fanName,
-          shippingAddress: shippingAddress ?? Prisma.JsonNull,
-          billingAddress: billingAddress ?? Prisma.JsonNull,
+          shippingAddress,
+          billingAddress,
           subtotalCents: subtotal || total - shippingCents,
           shippingCents,
           totalCents: total,
@@ -106,9 +108,8 @@ async function onCheckoutCompleted(session: Stripe.Checkout.Session): Promise<vo
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2025") {
       // Stock was already 0 by the time the webhook landed. Refund automatically.
       try {
-        const Stripe = (await import("stripe")).default;
-        const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2024-10-28.acacia" });
-        await stripeClient.refunds.create({
+        const { getStripe } = await import("@/lib/stripe/client");
+        await getStripe().refunds.create({
           payment_intent: paymentIntentId,
           refund_application_fee: true,
           reverse_transfer: true,

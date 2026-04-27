@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { requireArtist } from "@/lib/auth";
 import { requirePro } from "@/lib/pricing/tier-gate";
 import { createOnboardingLink, createOrGetConnectAccount, refreshConnectStatus } from "@/lib/stripe/connect";
+import { DEFAULT_SHIPPING_ZONES } from "@/lib/shipping/zones";
 
 const createShopSchema = z.object({
   displayName: z.string().min(2).max(80),
@@ -25,6 +26,7 @@ export async function createShopAction(formData: FormData) {
     if (!parsed.success) {
       return { success: false as const, error: parsed.error.issues[0]?.message ?? "Champs invalides" };
     }
+    const isCreate = !(await prisma.shop.findUnique({ where: { artistId: artist.id } }));
     await prisma.shop.upsert({
       where: { artistId: artist.id },
       create: {
@@ -32,6 +34,17 @@ export async function createShopAction(formData: FormData) {
         displayName: parsed.data.displayName,
         contactEmail: parsed.data.contactEmail,
         description: parsed.data.description ?? undefined,
+        // Seed des zones par défaut pour permettre les ventes immédiatement
+        shippingZones: {
+          create: DEFAULT_SHIPPING_ZONES.map((z) => ({
+            name: z.name,
+            countries: z.countries,
+            flatRateCents: z.flatRateCents,
+            freeAboveCents: z.freeAboveCents,
+            estimatedDays: z.estimatedDays,
+            carrier: z.carrier,
+          })),
+        },
       },
       update: {
         displayName: parsed.data.displayName,
@@ -39,7 +52,9 @@ export async function createShopAction(formData: FormData) {
         description: parsed.data.description ?? undefined,
       },
     });
+    void isCreate;
     revalidatePath("/shop/activate");
+    revalidatePath("/settings");
     return { success: true as const };
   } catch (e) {
     return { success: false as const, error: e instanceof Error ? e.message : "Erreur" };

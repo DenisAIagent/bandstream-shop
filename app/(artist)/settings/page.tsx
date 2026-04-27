@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireArtist } from "@/lib/auth";
@@ -24,6 +25,19 @@ export default async function SettingsPage() {
           <h1 className="font-display text-3xl">Réglages boutique</h1>
           <p className="text-sm text-dark-400">Mode vacances, fermeture définitive, modération.</p>
         </header>
+
+        <nav className="flex flex-wrap gap-2 text-sm">
+          <Link href="/settings/shipping" className="rounded-full border border-dark-700 px-4 py-1.5 text-dark-200 hover:border-bs-primary-400">
+            Zones de livraison →
+          </Link>
+          <Link href="/integrations/gmc" className="rounded-full border border-dark-700 px-4 py-1.5 text-dark-200 hover:border-bs-primary-400">
+            Google Merchant
+          </Link>
+          <Link href="/integrations/meta" className="rounded-full border border-dark-700 px-4 py-1.5 text-dark-200 hover:border-bs-primary-400">
+            Meta Catalog
+          </Link>
+        </nav>
+
         <SettingsForm
           status={artist.status}
           vacationUntil={artist.vacationUntil ? artist.vacationUntil.toISOString().slice(0, 10) : ""}
