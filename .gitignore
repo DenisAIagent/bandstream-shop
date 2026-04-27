@@ -38,3 +38,6 @@ prisma/migrations/dev.db*
 
 # Local isolation snapshot (each dev regenerates from their bandstream-app)
 scripts/.app-baseline.json
+
+# TypeScript incremental build artefact
+tsconfig.tsbuildinfo
