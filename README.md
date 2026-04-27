@@ -2,6 +2,8 @@
 
 Module e-commerce indépendant de band.stream. Permet aux artistes Pro/Label de vendre du merch physique via Stripe Connect avec sync Google Merchant Center + Meta Catalog.
 
+**Éditeur** : BANDSTREAM SAS — SIREN 939 221 438 — RCS Paris — 60 rue François Ier, 75008 Paris.
+
 ## Isolation stricte
 
 Ce module est **strictement indépendant** de `bandstream-app`. Aucune écriture ni import de code applicatif n'est autorisé. Seuls les assets de marque (logo, palette, polices) sont copiés en lecture dans `public/brand/`.
