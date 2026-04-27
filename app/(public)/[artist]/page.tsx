@@ -78,9 +78,13 @@ export default async function ArtistShopPage({ params }: { params: Promise<{ art
       </section>
 
       <footer className="border-t border-dark-900 px-6 py-8 text-center text-xs text-dark-500">
-        Boutique propulsée par <Link href="/" className="text-bs-primary-400 hover:underline">band.stream</Link> · contact vendeur : {artist.shop.contactEmail}
+        Boutique propulsée par{" "}
+        <a href="https://band.stream" target="_blank" rel="noreferrer" className="text-bs-primary-400 hover:underline">
+          band.stream
+        </a>{" "}
+        · contact vendeur : {artist.shop.contactEmail}
         <div className="mt-2">
-          BANDSTREAM SAS · SIREN 939 221 438 ·{" "}
+          BANDSTREAM SAS · SIREN 939 221 438 · 60 rue François Ier, 75008 Paris ·{" "}
           <Link href="/legal/mentions-legales" className="hover:text-bs-primary-400">Mentions légales</Link>
         </div>
       </footer>

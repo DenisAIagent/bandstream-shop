@@ -30,6 +30,12 @@ export default function MentionsLegalesPage() {
               <br />
               {c.address.postalCode} {c.address.city}, {c.address.country}
             </Dd>
+            <Dt>Site web</Dt>
+            <Dd>
+              <a href={c.contact.web} className="text-bs-primary-400 hover:underline" target="_blank" rel="noreferrer">
+                band.stream
+              </a>
+            </Dd>
             <Dt>Contact</Dt>
             <Dd>
               <a href={`mailto:${c.contact.email}`} className="text-bs-primary-400 hover:underline">
