@@ -1,0 +1,40 @@
+# dependencies
+node_modules
+.pnp
+.pnp.js
+
+# next
+.next/
+out/
+build
+dist
+
+# env (never commit secrets)
+.env
+.env.local
+.env.development
+.env.production
+.env.*.local
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# misc
+.DS_Store
+*.pem
+.vscode/
+.idea/
+
+# Playwright
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Prisma
+prisma/migrations/dev.db*
+
+# Local isolation snapshot (each dev regenerates from their bandstream-app)
+scripts/.app-baseline.json
