@@ -69,6 +69,19 @@ export async function startCheckoutForVariant(input: CheckoutInput): Promise<str
       // stockée sur Order.marketingOptIn — conditionne relance panier et
       // exports d'audiences.
       consent_collection: { promotions: "auto" },
+      // L221-28 13° C. conso : pour un contenu numérique téléchargeable, le
+      // renoncement exprès au droit de rétractation est affiché sur la page
+      // de paiement AVANT validation (cf. CGV art. 6 bis).
+      ...(product.isDigital
+        ? {
+            custom_text: {
+              submit: {
+                message:
+                  "En payant, vous demandez l'exécution immédiate de la fourniture des contenus numériques de cette commande et renoncez expressément à votre droit de rétractation pour ces contenus (art. L221-28 13° du Code de la consommation). Le droit de rétractation de 14 jours reste acquis pour les articles physiques.",
+              },
+            },
+          }
+        : {}),
       line_items: [
         {
           quantity: 1,
