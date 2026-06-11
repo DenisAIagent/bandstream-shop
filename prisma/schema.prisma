@@ -14,8 +14,21 @@ datasource db {
 // =============================================================================
 
 enum Tier {
-  PRO
+  FREE
+  SOLO
   LABEL
+}
+
+enum MemberRole {
+  OWNER
+  MANAGER
+}
+
+enum AssocStatus {
+  PENDING
+  CONFIRMED
+  REJECTED
+  EXPIRED
 }
 
 enum ArtistStatus {
@@ -37,6 +50,14 @@ enum ProductStatus {
   ARCHIVED
 }
 
+enum PricingMode {
+  /// Prix fixe classique (basePriceCents / priceCents des variantes).
+  FIXED
+  /// Prix libre (« name your price ») : le fan choisit son prix, au-dessus
+  /// d'un plancher `minPriceCents`. `basePriceCents` sert de prix suggéré.
+  NAME_YOUR_PRICE
+}
+
 enum OrderStatus {
   PAID
   SHIPPED
@@ -45,10 +66,32 @@ enum OrderStatus {
   CANCELLED
 }
 
+enum VatStatus {
+  /// Franchise en base de TVA (art. 293 B du CGI) — pas de TVA facturée.
+  EXEMPT_FRANCHISE
+  /// Assujetti à la TVA — décompose le TTC en HT + TVA sur la facture.
+  SUBJECT
+}
+
 enum IntegrationStatus {
   PENDING
   ACTIVE
   ERROR
+}
+
+/// Aligné sur Google Merchant Center / Meta Catalog pour les produits Apparel.
+enum Gender {
+  MALE
+  FEMALE
+  UNISEX
+}
+
+enum AgeGroup {
+  NEWBORN
+  INFANT
+  TODDLER
+  KIDS
+  ADULT
 }
 
 // =============================================================================
@@ -61,19 +104,37 @@ model ShopArtist {
   passwordHash  String
   artistName    String
   slug          String       @unique
-  tier          Tier         @default(PRO)
+  tier          Tier         @default(SOLO)
   countryCode   String
   status        ArtistStatus @default(ACTIVE)
   vacationUntil DateTime?
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
+  /// Compte « managé » par un label : pas de mot de passe utilisable, pas de
+  /// connexion directe, sert uniquement à porter l'identité d'un shop créé
+  /// via le hub label. Le `passwordHash` reste une chaîne aléatoire non
+  /// utilisable. La connexion réelle se fait toujours via le compte label.
+  managedByLabelId String?
+  managedByLabel   Label?    @relation("LabelManagedAccounts", fields: [managedByLabelId], references: [id], onDelete: SetNull)
 
-  shop          Shop?
-  stripeAccount StripeConnectAccount?
-  sessions      ArtistSession[]
+  /// Add-on payant « Boutique merch » — la boutique n'est PAS incluse dans
+  /// le plan Pro (5 €) ni Label (25 €). Il faut activer cet add-on pour
+  /// créer / accéder à une boutique : +10 €/mois pour Pro (1 boutique),
+  /// +30 €/mois pour Label (jusqu'à 100 boutiques). FREE ne peut pas
+  /// l'activer. Géré côté billing band.stream principal et resynchronisé
+  /// par webhook ; togglable en dev via `toggleShopAddonAction`.
+  shopAddonEnabled Boolean @default(false)
+
+  shop                Shop?
+  stripeAccount       StripeConnectAccount?
+  sessions            ArtistSession[]
+  shopMemberships     ShopMember[]
+  ownedLabel          Label?              @relation("LabelOwner")
+  associationsRequested ShopAssociationRequest[] @relation("AssocRequester")
 
   @@index([slug])
   @@index([email])
+  @@index([managedByLabelId])
 }
 
 model ArtistSession {
@@ -92,18 +153,185 @@ model Shop {
   id              String           @id @default(cuid())
   artistId        String           @unique
   artist          ShopArtist       @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  /// Label parent (optionnel) : permet de regrouper visuellement plusieurs
+  /// shops sous une marque label dans le hub. La gouvernance d'accès passe
+  /// par `ShopMember`, pas par ce champ.
+  labelId         String?
+  label           Label?           @relation(fields: [labelId], references: [id], onDelete: SetNull)
   displayName     String
   description     String?
   logoUrl         String?
   contactEmail    String
+
+  // ----- Add-on Personnalisation (+1 €/mois) ---------------------------------
+  /// Add-on activé pour ce shop. Lu localement en V1 ; V1.1 sync avec
+  /// l'API billing band.stream principal.
+  brandingEnabled    Boolean @default(false)
+  /// Couleur primaire en hex `#RRGGBB`. Surcharge `--bs-green` sur la
+  /// vitrine publique quand `brandingEnabled` est vrai.
+  brandPrimaryColor  String?
+  /// Couleur du texte sur le primaire (`#000000` ou `#FFFFFF`), recalculée
+  /// à chaque save via WCAG luminance pour garantir le contraste.
+  brandTextOnPrimary String?
+  /// URL d'image utilisée en bandeau du hero public (cover). Format conseillé
+  /// 1920×640 (3:1). Si null, fond plat noir.
+  brandBannerUrl     String?
+  /// Intensité du voile noir au-dessus du bandeau (0..100). Plus c'est haut,
+  /// plus le bandeau est assombri pour garantir la lisibilité du contenu.
+  /// Défaut 60.
+  brandBannerOverlay Int     @default(60)
+  /// Couleur du nom de la boutique (h1) sur le hero. Hex `#RRGGBB`.
+  /// Si null, blanc par défaut.
+  brandTitleColor    String?
+  /// Couleur de la tagline (description courte) sur le hero. Hex `#RRGGBB`.
+  /// Si null, blanc 70% par défaut.
+  brandTaglineColor  String?
+  /// Couleur du bouton panier dans le hero. Hex `#RRGGBB`. Configurable
+  /// indépendamment de la couleur principale (les CTA produits restent
+  /// `brandPrimaryColor`). Si null, blanc.
+  brandCartButtonColor String?
+
+  // ─────────── Analytics & tracking par shop ───────────
+  /// Google Analytics 4 Measurement ID (format `G-XXXXXXXXXX`). Si défini,
+  /// on injecte gtag.js sur toutes les pages publiques de ce shop. Sert
+  /// aussi de bus pour Google Ads (le même `gtag` couvre les deux).
+  ga4MeasurementId        String?
+  /// Code de vérification Google Search Console — content du meta tag
+  /// `<meta name="google-site-verification" content="…">`. Permet à
+  /// l'artiste de réclamer la propriété de `shop.band.stream/<slug>`
+  /// dans sa propre console GSC.
+  gscVerificationCode     String?
+  /// Google Ads Conversion ID (format `AW-XXXXXXXXX`). Active le tag Ads
+  /// sur les pages publiques. Sans ID, aucun script Ads n'est injecté.
+  googleAdsConversionId   String?
+  /// Label de la conversion « Achat » dans Google Ads (format
+  /// `AW-XXXXXXXXX/abcDEFghi`). Si défini, on tire l'event purchase à
+  /// `/checkout/success`. Sans label, on injecte juste le pageview Ads.
+  googleAdsConversionLabel String?
+  /// Meta Pixel ID (Facebook + Instagram). 14-17 chiffres. Si défini, on
+  /// charge `fbevents.js` + `fbq('init', …)` + `fbq('track', 'PageView')`
+  /// + `fbq('track', 'Purchase', { value, currency })` à
+  /// `/checkout/success`.
+  metaPixelId             String?
+  /// TikTok Pixel Code. ~16-32 chars alphanumériques (commence souvent
+  /// par `C` ou `CK`). Si défini, on charge le pixel TikTok + `ttq.page()`
+  /// + `ttq.track('CompletePayment', …)` à `/checkout/success`.
+  tiktokPixelCode         String?
+  /// Pinterest Tag ID. 13 chiffres. Si défini, on charge `pintrk.js`
+  /// + `pintrk('track', 'PageVisit')` + `pintrk('track', 'Checkout', …)`
+  /// à `/checkout/success`.
+  pinterestTagId          String?
+  /// Snapchat Pixel ID. UUID-like (8-4-4-4-12 hex). Si défini, on charge
+  /// `snaptr.js` + `snaptr('init', …)` + `snaptr('track', 'PURCHASE', …)`
+  /// à `/checkout/success`.
+  snapchatPixelId         String?
+
+  // ─────────── Facturation & TVA (Option B : l'artiste est le vendeur) ───────────
+  /// Raison sociale / nom du vendeur tel qu'il doit apparaître sur la
+  /// facture. Null = on retombe sur `displayName`.
+  legalName       String?
+  /// Adresse postale du vendeur (multi-lignes autorisées). Mention
+  /// obligatoire sur une facture.
+  legalAddress    String?
+  /// SIREN/SIRET du vendeur. Affiché sur la facture si renseigné.
+  siret           String?
+  /// Statut TVA du vendeur. La majorité des artistes indé sont en franchise
+  /// en base (art. 293 B du CGI) → pas de TVA facturée, mention spéciale.
+  vatStatus       VatStatus @default(EXEMPT_FRANCHISE)
+  /// N° TVA intracommunautaire. Requis (validation) si vatStatus = SUBJECT.
+  vatNumber       String?
+  /// Taux de TVA en points de base (2000 = 20,00 %, 550 = 5,5 %). Sert à
+  /// décomposer le prix TTC en HT + TVA sur la facture. Ignoré en franchise.
+  vatRateBps      Int       @default(2000)
+  /// Compteur de facture par boutique, incrémenté atomiquement à chaque
+  /// commande → numérotation séquentielle sans trou (exigence légale).
+  /// Ne jamais décrémenter ni réutiliser.
+  invoiceCounter  Int       @default(0)
+
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 
-  shippingZones   ShippingZone[]
-  products        Product[]
-  orders          Order[]
-  gmcIntegration  GmcIntegration?
-  metaIntegration MetaIntegration?
+  members              ShopMember[]
+  associationRequests  ShopAssociationRequest[]
+  shippingZones        ShippingZone[]
+  products             Product[]
+  orders               Order[]
+  productReviews       ProductReview[]
+  discountCodes        DiscountCode[]
+  pages                ShopPage[]
+  redirects            ShopRedirect[]
+  abandonedCarts       AbandonedCart[]
+  gmcIntegration       GmcIntegration?
+  metaIntegration      MetaIntegration?
+  tiktokIntegration    TiktokIntegration?
+
+  @@index([labelId])
+}
+
+// =============================================================================
+// Memberships & label
+// =============================================================================
+
+/// Qui peut administrer ce shop. Chaque shop a au moins un OWNER (rétrocompat
+/// solo : `Shop.artistId` => OWNER membership). Un compte LABEL peut détenir
+/// plusieurs memberships MANAGER ou OWNER (sur les shops qu'il a créés
+/// lui-même).
+model ShopMember {
+  id           String     @id @default(cuid())
+  shopArtistId String
+  shopArtist   ShopArtist @relation(fields: [shopArtistId], references: [id], onDelete: Cascade)
+  shopId       String
+  shop         Shop       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  role         MemberRole @default(MANAGER)
+  createdAt    DateTime   @default(now())
+
+  @@unique([shopArtistId, shopId])
+  @@index([shopArtistId])
+  @@index([shopId])
+}
+
+model Label {
+  id                String     @id @default(cuid())
+  slug              String     @unique
+  name              String
+  ownerShopArtistId String     @unique
+  owner             ShopArtist @relation("LabelOwner", fields: [ownerShopArtistId], references: [id], onDelete: Cascade)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  shops              Shop[]
+  managedAccounts    ShopArtist[]              @relation("LabelManagedAccounts")
+  associationRequests ShopAssociationRequest[]
+
+  @@index([ownerShopArtistId])
+}
+
+/// Demande de rattachement d'un shop existant à un label. Le label saisit le
+/// slug du shop, on envoie un email au propriétaire (`Shop.artist.email`),
+/// qui clique le lien `/associate/confirm/<token>`. À la confirmation : on
+/// crée un `ShopMember(role=MANAGER)` pour le label + on set `Shop.labelId`.
+model ShopAssociationRequest {
+  id            String      @id @default(cuid())
+  labelId       String
+  label         Label       @relation(fields: [labelId], references: [id], onDelete: Cascade)
+  shopId        String
+  shop          Shop        @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  /// Pour audit : quel ShopArtist (l'owner du label) a déclenché la demande.
+  requestedById String
+  requestedBy   ShopArtist  @relation("AssocRequester", fields: [requestedById], references: [id], onDelete: Cascade)
+  status        AssocStatus @default(PENDING)
+  confirmToken  String      @unique
+  message       String?
+  expiresAt     DateTime
+  confirmedAt   DateTime?
+  rejectedAt    DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@unique([labelId, shopId, status])
+  @@index([confirmToken])
+  @@index([shopId])
+  @@index([labelId])
 }
 
 model StripeConnectAccount {
@@ -131,20 +359,138 @@ model Product {
   title          String
   shortDesc      String
   longDesc       String
+  /// Texte de la `google_product_category` (chemin ou ID GMC).
   category       String
   brand          String
   status         ProductStatus    @default(DRAFT)
   basePriceCents Int
+  /// Poids unitaire (g) pour le calcul du port. Ignoré (0) pour un produit
+  /// digital, qui n'est pas expédié.
   weightGrams    Int
+  /// Produit digital (téléchargement) : pas d'expédition, pas d'adresse, pas
+  /// de stock. Délivré via un lien de téléchargement sécurisé après paiement.
+  isDigital      Boolean          @default(false)
+  /// Mode de prix : fixe ou « name your price ». En NYP, `basePriceCents` est
+  /// le prix suggéré et `minPriceCents` le plancher.
+  pricingMode    PricingMode      @default(FIXED)
+  /// Plancher de prix pour le mode NYP (centimes). Ignoré en mode FIXED.
+  minPriceCents  Int              @default(0)
+
+  // ----- Attributs catalogue (GMC + Meta) -----------------------------------
+  /// Apparel uniquement — GMC `gender` / Meta `gender`. null pour autres.
+  gender          Gender?
+  /// Apparel uniquement — GMC `age_group` / Meta `age_group`. null sinon.
+  ageGroup        AgeGroup?
+  /// Apparel uniquement — système de taille (EU, FR, UK, US, IT, JP).
+  sizeSystem      String?
+  /// Apparel uniquement — type de coupe (regular, petite, plus, tall, maternity).
+  sizeType        String?
+  /// Matière dominante ("Coton bio 220g/m²", "Vinyle 180g", …).
+  material        String?
+  /// Taxonomie interne libre, distincte de `category` GMC.
+  /// Exemple : "Apparel > T-Shirts > Tour merch".
+  productType     String?
+  /// Pays d'origine ISO-2. Fallback côté mapper sur `shop.artist.countryCode`.
+  countryOfOrigin String?
+
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
   images         ProductImage[]
   variants       ProductVariant[]
   orderItems     OrderItem[]
+  reviews        ProductReview[]
+  digitalAssets  DigitalAsset[]
+  downloadGrants DownloadGrant[]
 
   @@unique([shopId, slug])
   @@index([status])
+}
+
+/// Fichier téléchargeable rattaché à un produit digital (ex. les pistes d'un
+/// album, un PDF, un zip de stems). Stocké dans un dossier PRIVÉ hors `public/`
+/// — jamais servi statiquement, uniquement via une route token-gated.
+model DigitalAsset {
+  id          String   @id @default(cuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  /// Nom de fichier original présenté au fan.
+  fileName    String
+  /// Chemin relatif dans le stockage privé (`storage/digital/...`).
+  storageKey  String
+  contentType String
+  sizeBytes   Int
+  position    Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  @@index([productId])
+}
+
+/// Droit de téléchargement délivré à un fan après paiement d'un produit
+/// digital. Le token en clair est envoyé par email / affiché sur le compte ;
+/// seule son empreinte est stockée. Borné par expiration + nombre de téléch.
+model DownloadGrant {
+  id            String   @id @default(cuid())
+  /// Empreinte SHA-256 du token (le clair n'est jamais persisté).
+  tokenHash     String   @unique
+  orderId       String
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  fanEmail      String
+  maxDownloads  Int      @default(20)
+  downloadCount Int      @default(0)
+  expiresAt     DateTime
+  createdAt     DateTime @default(now())
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+/// Avis produit laissé par un fan. Modération artiste obligatoire (status
+/// PENDING par défaut) — l'avis n'apparaît publiquement et dans le JSON-LD
+/// `AggregateRating` qu'une fois APPROVED.
+///
+/// Anti-abus :
+///   - Un seul avis par couple (productId, authorEmail). Si l'email est
+///     omis, on retombe sur (productId, authorName) — moins strict mais
+///     suffisant pour le V1.
+///   - Modération artiste = pare-feu humain contre les bots / trolls.
+///
+/// `verifiedPurchase` est dérivé asynchrone (matche un `OrderItem` qui
+/// référence ce produit + email du payeur). V1 : on stocke false par défaut
+/// et on backfille via un cron quand le système d'orders aura un email
+/// stable.
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model ProductReview {
+  id        String       @id @default(cuid())
+  productId String
+  product   Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  shopId    String
+  shop      Shop         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  authorName  String
+  authorEmail String?
+  rating      Int
+  title       String?
+  body        String
+
+  status      ReviewStatus @default(PENDING)
+  /// Set à true par le job de matching commande (V1.x). Sert au badge
+  /// « Achat vérifié » dans la liste publique.
+  verifiedPurchase Boolean @default(false)
+
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@index([productId, status])
+  @@index([shopId, status])
+  @@unique([productId, authorEmail])
 }
 
 model ProductVariant {
@@ -156,6 +502,30 @@ model ProductVariant {
   color      String?
   stock      Int         @default(0)
   priceCents Int
+
+  // ----- Identifiants produit (GMC `gtin` / `mpn` / Meta idem) --------------
+  /// Code-barres global (EAN-13, UPC-12, ISBN-13). null pour items custom.
+  gtin       String?
+  /// Manufacturer Part Number — utile si pas de GTIN.
+  mpn        String?
+
+  // ----- Promo (sale price) -------------------------------------------------
+  /// Prix promotionnel en centimes (doit être < priceCents). null = pas de promo.
+  salePriceCents     Int?
+  /// Début de la fenêtre promo (inclusif). null = effective immédiatement.
+  salePriceStartAt   DateTime?
+  /// Fin de la fenêtre promo (inclusif). null = pas de date de fin.
+  salePriceEndAt     DateTime?
+
+  // ----- Pré-commande (drop produit avant disponibilité physique) ---------
+  /// Si vrai, la variante peut être commandée même avec stock=0. La date
+  /// d'expédition prévue est `availableFrom`. Sync GMC/Meta avec
+  /// `availability: "preorder"`.
+  isPreorder       Boolean   @default(false)
+  /// Date prévue de disponibilité (expédition). Affichée au fan sur la
+  /// fiche produit. null si pré-commande sans date communiquée.
+  availableFrom    DateTime?
+
   orderItems OrderItem[]
 
   @@unique([productId, sku])
@@ -174,15 +544,33 @@ model ProductImage {
 // Shipping
 // =============================================================================
 
+/// Zone de livraison alignée sur le schéma de Google Merchant Center
+/// `Shippingsetting` : un service par zone (déclinable par pays via le
+/// tableau `countries`), avec délais découpés en handling (préparation
+/// chez l'artiste) et transit (acheminement transporteur), tarif fixe
+/// + seuil de gratuité optionnel.
 model ShippingZone {
   id             String   @id @default(cuid())
   shopId         String
   shop           Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  /// Identifiant interne (ex. FR_METRO). Pas exposé au fan.
   name           String
-  countries      String[] // ISO-2 codes
+  /// Nom du service tel qu'envoyé à GMC et affiché au fan ("Standard FR").
+  /// Si null, on retombe sur `name`.
+  serviceName    String?
+  /// Pays couverts (ISO-2). Une zone peut couvrir plusieurs pays au
+  /// même tarif/service ; côté GMC, on génère une entrée par pays.
+  countries      String[]
+  /// ISO-4217 (EUR par défaut). Doit correspondre à la devise du shop.
+  currency       String   @default("EUR")
   flatRateCents  Int
   freeAboveCents Int?
-  estimatedDays  Int
+  /// Délai de préparation chez l'artiste (handling time GMC), en jours.
+  handlingDaysMin Int     @default(1)
+  handlingDaysMax Int     @default(2)
+  /// Délai de transit transporteur (transit time GMC), en jours.
+  transitDaysMin Int      @default(2)
+  transitDaysMax Int      @default(5)
   carrier        String
   enabled        Boolean  @default(true)
 }
@@ -213,16 +601,44 @@ model Order {
   trackingNumber        String?
   shippedAt             DateTime?
   deliveredAt           DateTime?
+  /// Stampé quand l'email de demande d'avis post-livraison a été envoyé
+  /// (cron). Évite le double envoi.
+  reviewRequestedAt     DateTime?
   refundedAt            DateTime?
   refundedAmountCents   Int?
   utmSource             String?
   utmMedium             String?
   utmCampaign           String?
+  /// Opt-in marketing recueilli au checkout Stripe (consent_collection
+  /// promotions). Conditionne la relance panier et l'export d'audiences
+  /// hashées (RGPD art. 6 / L34-5 CPCE) — false par défaut.
+  marketingOptIn        Boolean     @default(false)
+
+  // ─────────── Facture (snapshot figé au moment de la vente) ───────────
+  /// Montant de TVA inclus dans `totalCents` (0 si vendeur en franchise).
+  taxCents              Int       @default(0)
+  /// Taux de TVA appliqué, en points de base (snapshot). 0 si franchise.
+  taxRateBps            Int       @default(0)
+  /// true si le vendeur était en franchise en base au moment de la vente
+  /// → mention « TVA non applicable, art. 293 B du CGI » sur la facture.
+  vatExempt             Boolean   @default(true)
+  /// Numéro de facture séquentiel par boutique (ex. FAC-2026-000042).
+  /// Attribué dans la transaction de création de commande.
+  invoiceNumber         String?
+  /// Date d'émission de la facture (= création de la commande payée).
+  invoicedAt            DateTime?
+  /// Identité vendeur figée à l'émission (raison sociale, adresse, SIRET,
+  /// n° TVA, statut). Garantit une facture immuable même si le vendeur
+  /// modifie son profil ensuite.
+  sellerSnapshot        Json?
+
   createdAt             DateTime    @default(now())
   updatedAt             DateTime    @updatedAt
 
   items OrderItem[]
+  downloadGrants DownloadGrant[]
 
+  @@unique([shopId, invoiceNumber])
   @@index([shopId, status])
   @@index([fanEmail])
 }
@@ -270,4 +686,224 @@ model MetaIntegration {
   lastError   String?
   updatedAt   DateTime          @updatedAt
   createdAt   DateTime          @default(now())
+}
+
+// =============================================================================
+// Codes promo (V1)
+// =============================================================================
+
+enum DiscountType {
+  PERCENT       // ex. 10 = -10%
+  FIXED         // ex. 500 = -5€ (en cents)
+  FREE_SHIPPING // applique 0 € sur les frais de port
+}
+
+model DiscountCode {
+  id              String       @id @default(cuid())
+  shopId          String
+  shop            Shop         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  /// Code à saisir au panier (ex. "TOUR2026"). Unique par shop, insensible à la casse.
+  code            String
+  type            DiscountType
+  /// Valeur : pourcentage 1-100 si PERCENT, montant en cents si FIXED.
+  /// Ignoré pour FREE_SHIPPING.
+  value           Int          @default(0)
+  /// Montant mini du panier (sous-total HT) pour appliquer le code. 0 = pas de minimum.
+  minSubtotalCents Int         @default(0)
+  /// Plage de validité. Si null, pas de limite.
+  validFrom       DateTime?
+  validUntil      DateTime?
+  /// Quota global d'utilisations. null = illimité.
+  maxUses         Int?
+  /// Compteur d'utilisations confirmées (incrémenté par le webhook Stripe).
+  usedCount       Int          @default(0)
+  enabled         Boolean      @default(true)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@unique([shopId, code])
+  @@index([shopId, enabled])
+}
+
+// =============================================================================
+// Pages CMS personnalisables par shop (À propos, Politique de retour, etc.)
+// =============================================================================
+
+enum ShopPageStatus {
+  DRAFT
+  PUBLISHED
+}
+
+model ShopPage {
+  id        String         @id @default(cuid())
+  shopId    String
+  shop      Shop           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  slug      String
+  title     String
+  /// Markdown léger (paragraphes, listes, liens). Rendu safe côté serveur.
+  body      String
+  status    ShopPageStatus @default(DRAFT)
+  /// Si vrai, la page apparaît dans le footer de la vitrine publique.
+  showInFooter Boolean     @default(false)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@unique([shopId, slug])
+  @@index([shopId, status])
+}
+
+// =============================================================================
+// Redirections (301/302) par shop
+// =============================================================================
+
+model ShopRedirect {
+  id         String   @id @default(cuid())
+  shopId     String
+  shop       Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  /// Path source relatif au shop (ex. "/old-tshirt" → applique sur /<artistSlug>/old-tshirt).
+  fromPath   String
+  /// Path destination, relatif au shop (ex. "/tshirt-tour-26") ou absolu.
+  toPath     String
+  /// 301 = permanent (par défaut), 302 = temporaire.
+  statusCode Int      @default(301)
+  enabled    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([shopId, fromPath])
+  @@index([shopId, enabled])
+}
+
+// =============================================================================
+// TikTok Catalog (TikTok Shopping Center / Business Center)
+// =============================================================================
+
+/// Sync auto vers le catalog TikTok à publish/archive d'un produit. Pixel
+/// TikTok déjà géré par `Shop.tiktokPixelCode` (couche analytics).
+model TiktokIntegration {
+  id          String            @id @default(cuid())
+  shopId      String            @unique
+  shop        Shop              @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  /// TikTok Business Center ID (ex. "6900..."). Sert de scope OAuth.
+  bcId        String
+  /// Catalog ID dans le Business Center.
+  catalogId   String
+  /// Token OAuth long-lived, chiffré au repos via `lib/encryption.ts`.
+  accessToken String
+  status      IntegrationStatus @default(PENDING)
+  lastSyncAt  DateTime?
+  lastError   String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+}
+
+// =============================================================================
+// Comptes fans (auth passwordless via magic link email)
+// =============================================================================
+
+/// Compte fan optionnel (login passwordless). Permet de lier les commandes
+/// guest passées avec le même email, voir l'historique, télécharger les
+/// factures, suivre les expéditions sans aller fouiller les emails.
+model Fan {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  /// Verified à la 1ère connexion magic link réussie. Avant ça, le compte
+  /// peut exister à partir d'une commande mais pas être connectable.
+  verified  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessions FanSession[]
+  magicLinks FanMagicLink[]
+
+  @@index([email])
+}
+
+model FanMagicLink {
+  id        String   @id @default(cuid())
+  fanId     String
+  fan       Fan      @relation(fields: [fanId], references: [id], onDelete: Cascade)
+  /// Token hashé SHA-256. Le plaintext part dans l'URL d'email.
+  tokenHash String   @unique
+  /// Validité courte (15 min).
+  expiresAt DateTime
+  /// Set quand le lien est consommé. Null = encore valide.
+  consumedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([fanId])
+  @@index([tokenHash])
+}
+
+model FanSession {
+  id        String   @id @default(cuid())
+  fanId     String
+  fan       Fan      @relation(fields: [fanId], references: [id], onDelete: Cascade)
+  /// Token hashé SHA-256.
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([fanId])
+  @@index([tokenHash])
+}
+
+// =============================================================================
+// Abandoned cart recovery
+// =============================================================================
+
+/// Persiste un snapshot de panier au moment où le fan clique "Payer" et qu'on
+/// crée la session Stripe Checkout. Si la session expire ou n'est jamais
+/// finalisée, un cron envoie un email de relance avec un code promo -5 %.
+///
+/// Le snapshot inclut email + cart lines + URL Stripe (réutilisable tant que
+/// la session n'est pas expirée). On ne stocke jamais la CB, juste le contexte
+/// commercial.
+model AbandonedCart {
+  id                   String   @id @default(cuid())
+  shopId               String
+  shop                 Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  fanEmail             String
+  fanName              String
+  /// JSON: { lines: [{ variantId, quantity, unitPriceCents, productTitle, variantLabel? }], subtotalCents, shippingCents, totalCents, country }
+  cartSnapshot         Json
+  /// URL Stripe Checkout réutilisable. Le fan peut cliquer dans l'email pour
+  /// reprendre le checkout exactement où il l'avait laissé.
+  stripeCheckoutUrl    String
+  stripeSessionId      String   @unique
+  /// Code promo one-shot généré pour cette relance (5 % par défaut).
+  /// Null tant que l'email n'a pas été envoyé.
+  recoveryDiscountCode String?
+  /// Stampé quand le cron envoie l'email. Évite double envoi.
+  recoveryEmailSentAt  DateTime?
+  /// Stampé quand le webhook checkout.session.completed confirme la
+  /// récupération. Évite d'envoyer une relance après conversion.
+  recoveredAt          DateTime?
+  /// Stampé quand le webhook checkout.session.expired arrive (24h Stripe
+  /// par défaut). Au-delà, plus la peine de relancer (l'URL est morte).
+  expiredAt            DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([shopId, recoveryEmailSentAt])
+  @@index([stripeSessionId])
+}
+
+// =============================================================================
+// Rate limiting (fenêtre fixe, DB-backed)
+// =============================================================================
+
+/// Compteur de rate limiting à fenêtre fixe. Une ligne par couple
+/// (bucket, identifiant) — ex. "login:ip:1.2.3.4" ou "magiclink:email:x@y".
+/// Pas de Redis dans la stack : Postgres suffit pour les volumes V1 et
+/// reste cohérent entre instances serverless. Les lignes expirées sont
+/// réinitialisées à la volée et peuvent être purgées par un cron.
+model RateLimitCounter {
+  key       String   @id
+  count     Int      @default(0)
+  expiresAt DateTime
+  updatedAt DateTime @updatedAt
+
+  @@index([expiresAt])
 }

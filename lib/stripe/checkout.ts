@@ -64,6 +64,11 @@ export async function startCheckoutForVariant(input: CheckoutInput): Promise<str
       mode: "payment",
       currency: "eur",
       customer_email: input.fanEmail,
+      // RGPD / L34-5 CPCE : case opt-in marketing native Stripe ("J'accepte
+      // de recevoir des offres"). Lue dans le webhook (session.consent) et
+      // stockée sur Order.marketingOptIn — conditionne relance panier et
+      // exports d'audiences.
+      consent_collection: { promotions: "auto" },
       line_items: [
         {
           quantity: 1,
@@ -86,7 +91,7 @@ export async function startCheckoutForVariant(input: CheckoutInput): Promise<str
         {
           shipping_rate_data: {
             type: "fixed_amount",
-            display_name: `${quote.carrier} (${quote.estimatedDays} j)`,
+            display_name: `${quote.carrier} (${quote.totalDaysMin}-${quote.totalDaysMax} j)`,
             fixed_amount: { amount: quote.shippingCents, currency: "eur" },
           },
         },
@@ -116,7 +121,9 @@ export async function startCheckoutForVariant(input: CheckoutInput): Promise<str
         utm_medium: input.utmMedium ?? "",
         utm_campaign: input.utmCampaign ?? "",
       },
-      success_url: `${env.NEXT_PUBLIC_APP_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
+      // `shop=<slug>` permet à `/checkout/success` de retrouver le shop
+      // pour injecter ses tags analytics et tirer la conversion Google Ads.
+      success_url: `${env.NEXT_PUBLIC_APP_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}&shop=${input.shopSlug}`,
       cancel_url: `${env.NEXT_PUBLIC_APP_URL}/${input.shopSlug}/${product.slug}?cancelled=1`,
     },
   );
