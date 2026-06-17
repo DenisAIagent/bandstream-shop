@@ -31,6 +31,14 @@ const envSchema = z.object({
   COMMISSION_RATE_LABEL: z.coerce.number().min(0).max(1).default(0),
   COMMISSION_FLOOR_CENTS_PRO: z.coerce.number().int().min(0).default(30),
   COMMISSION_FLOOR_CENTS_LABEL: z.coerce.number().int().min(0).default(0),
+
+  // Secret partagé pour authentifier les crons de rétention RGPD
+  // (anonymize-orders, abandoned-carts). Sans lui, les routes renvoient 503
+  // et la purge ne s'exécute jamais — zod retirait jusqu'ici cette clé de
+  // l'objet env validé. Fourni par Vercel Cron via
+  // `Authorization: Bearer <CRON_SECRET>`, ou un scheduler générique via
+  // l'en-tête `x-cron-secret`.
+  CRON_SECRET: z.string().min(16, "CRON_SECRET must be at least 16 chars").optional(),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
