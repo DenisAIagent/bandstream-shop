@@ -39,6 +39,14 @@ const envSchema = z.object({
   // `Authorization: Bearer <CRON_SECRET>`, ou un scheduler générique via
   // l'en-tête `x-cron-secret`.
   CRON_SECRET: z.string().min(16, "CRON_SECRET must be at least 16 chars").optional(),
+
+  // Secret partagé pour les appels machine-à-machine internes à l'écosystème
+  // (ex. le CRM qui lit le statut + CA d'une boutique pour la fiche client).
+  // Transmis via l'en-tête `x-internal-secret` (ou `Authorization: Bearer`).
+  INTERNAL_API_SECRET: z
+    .string()
+    .min(16, "INTERNAL_API_SECRET must be at least 16 chars")
+    .optional(),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
