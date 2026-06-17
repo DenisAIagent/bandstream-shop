@@ -118,7 +118,8 @@ Cf. `.env.example` pour la liste complète. Les essentielles :
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | OAuth GMC |
 | `META_APP_ID` / `META_APP_SECRET` | OAuth Meta Catalog |
 | `TIKTOK_APP_ID` / `TIKTOK_APP_SECRET` | OAuth TikTok Business |
-| `CRON_SECRET` | Auth des crons (`abandoned-carts`, `review-requests`) — Bearer ou `x-cron-secret` |
+| `CRON_SECRET` | Auth des crons (`abandoned-carts`, `review-requests`, `anonymize-orders`) — Bearer ou `x-cron-secret` ; planifiés dans `vercel.json` |
+| `INTERNAL_API_SECRET` | Auth de l'API interne `/api/internal/*` (ex. CRM → statut + CA d'un artiste) — header `x-internal-secret` ou Bearer |
 | `RESEND_API_KEY` | Emails transactionnels (cycle de vie, relances, magic links, factures, téléchargements) |
 | `NEXT_PUBLIC_SHOP_BASE_URL` | URL absolue prod (sitemap, canonical, OG, JSON-LD) |
 | `COMMISSION_RATE_PRO` / `COMMISSION_RATE_LABEL` | Taux commission par tier (override possible) |
@@ -338,6 +339,7 @@ Tags injectés uniquement sur ses pages publiques (`/<slug>/*`). À `/checkout/s
 - **Meta Catalog** — sync auto à publish/archive (Graph API)
 - **TikTok Catalog** — OAuth Business + sync produits (1 variante = 1 SKU TikTok)
 - Tokens OAuth chiffrés AES-GCM at rest
+- **API interne** `GET /api/internal/artist-commerce?email=` (auth `INTERNAL_API_SECRET`) — statut boutique (`shop_enabled`) + CA net (Σ `totalCents` − remboursements des commandes PAID/SHIPPED/DELIVERED), agrégé sur **toutes** les boutiques du compte (propre + memberships + label). Consommé par le CRM pour la fiche client.
 
 ---
 
