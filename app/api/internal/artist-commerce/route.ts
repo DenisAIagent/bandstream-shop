@@ -14,7 +14,13 @@ export const dynamic = "force-dynamic";
  *
  * CA net = Σ (totalCents − refundedAmountCents) des commandes encaissées
  * (PAID / SHIPPED / DELIVERED). Les commandes REFUNDED / CANCELLED sont
- * exclues. V1 : périmètre = la boutique détenue par l'artiste (Shop.artistId).
+ * exclues.
+ *
+ * Périmètre = TOUTES les boutiques contrôlées par le compte (multi-shops) :
+ *   - sa boutique propre (Shop.artistId),
+ *   - les boutiques où il est membre (ShopMember, OWNER ou MANAGER),
+ *   - s'il possède un Label : les boutiques rattachées à ce label.
+ * L'union est dédupliquée. Cas label = somme de toutes ses boutiques.
  */
 const COUNTED_STATUSES = ["PAID", "SHIPPED", "DELIVERED"] as const;
 
@@ -51,6 +57,8 @@ export async function GET(req: NextRequest) {
       status: true,
       shopAddonEnabled: true,
       shop: { select: { id: true } },
+      shopMemberships: { select: { shopId: true } },
+      ownedLabel: { select: { shops: { select: { id: true } } } },
     },
   });
 
@@ -58,14 +66,21 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ found: false, shop_enabled: false });
   }
 
-  const shopId = artist.shop?.id ?? null;
+  // Union dédupliquée des boutiques contrôlées par le compte.
+  const shopIds = new Set<string>();
+  if (artist.shop?.id) shopIds.add(artist.shop.id);
+  for (const m of artist.shopMemberships) shopIds.add(m.shopId);
+  if (artist.ownedLabel) {
+    for (const s of artist.ownedLabel.shops) shopIds.add(s.id);
+  }
+
   let revenueCents = 0;
   let ordersCount = 0;
   let currency = "EUR";
 
-  if (shopId) {
+  if (shopIds.size > 0) {
     const orders = await prisma.order.findMany({
-      where: { shopId, status: { in: [...COUNTED_STATUSES] } },
+      where: { shopId: { in: [...shopIds] }, status: { in: [...COUNTED_STATUSES] } },
       select: { totalCents: true, refundedAmountCents: true, currency: true },
     });
     ordersCount = orders.length;
@@ -79,7 +94,8 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     found: true,
     shop_enabled: artist.shopAddonEnabled,
-    has_shop: Boolean(shopId),
+    has_shop: shopIds.size > 0,
+    shops_count: shopIds.size,
     artist_status: artist.status,
     revenue_total_cents: revenueCents,
     revenue_total_eur: Math.round(revenueCents) / 100,
